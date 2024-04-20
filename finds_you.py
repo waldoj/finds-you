@@ -10,7 +10,7 @@ def fetch_books_with_snippets(query, api_key):
         params = {
             'q': query,
             'startIndex': start_index,
-            'maxResults': 40,  # You can adjust this number, up to 40 is allowed
+            'maxResults': 40,  # Up to 40 is allowed
             'key': api_key
         }
         response = requests.get(url, params=params)

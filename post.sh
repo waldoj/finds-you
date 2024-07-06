@@ -25,7 +25,7 @@ function select_entry {
 # See if an entry has been used in the past 500 posts
 function is_recent {
     local entry_hash=$(echo -n "$1" | md5sum | cut -d ' ' -f 1)
-    if tail -n 50 post_history.txt | grep -q "$entry_hash"; then
+    if tail -n 500 post_history.txt | grep -q "$entry_hash"; then
         return 0  # 0 = true, recent
     else
         return 1  # 1 = false, not recent

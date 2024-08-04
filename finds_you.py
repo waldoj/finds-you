@@ -71,7 +71,9 @@ def save_snippets_to_file(snippets, file_name):
         for snippet in snippets:
             file.write(snippet + '\n')  # Write each snippet in a new paragraph
 
-# Usage example
+# Usage
+api_key = 'abcdefghijklmnopqrstuvwxyz0123456789'  # Replace with your actual Google API key
+query = '"finds you when"'  # Replace with your search query
 snippets = fetch_books_with_snippets(query, api_key)
 
 replacements = [

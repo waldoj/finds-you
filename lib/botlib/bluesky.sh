@@ -193,7 +193,11 @@ bsky_await_video() {
     while [ "$attempt" -lt "$BSKY_POLL_ATTEMPTS" ]; do
         attempt=$(( attempt + 1 ))
 
-        job_json=$(curl -s -f "${auth[@]}" \
+        # ${auth[@]+"${auth[@]}"} rather than "${auth[@]}": under `set -u`,
+        # bash 3.2 -- which is what macOS ships -- treats the expansion of an
+        # empty array as an unbound variable and aborts. Several bots run with
+        # `set -euo pipefail`, so an empty jwt would kill the poll outright.
+        job_json=$(curl -s -f ${auth[@]+"${auth[@]}"} \
             "${BLUESKY_VIDEO_SERVER}/xrpc/app.bsky.video.getJobStatus?jobId=${job_id}") || return 1
 
         state=$(printf '%s' "$job_json" | jq -r '.jobStatus.state // empty')

@@ -72,7 +72,7 @@ POST="I hope this email ${ENTRY}"
 
 # Send the message to Mastodon
 masto_post_status "$POST" > /dev/null \
-    || exit_error "Posting message to Mastodon failed"
+    || exit_error "Posting message to Mastodon failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 
 log_info "posted to mastodon"
 
@@ -81,7 +81,7 @@ echo -n "$ENTRY" | md5sum | cut -d ' ' -f 1 >> post_history.txt
 
 # Create an authentication session on Bluesky
 SESSION_JSON=$(bsky_create_session "$BLUESKY_HANDLE" "$BLUESKY_APP_PASSWORD") \
-    || exit_error "Could not authenticate to Bluesky"
+    || exit_error "Could not authenticate to Bluesky: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 
 ACCESS_JWT=$(bsky_access_jwt "$SESSION_JSON")
 
@@ -90,7 +90,7 @@ ACCESS_JWT=$(bsky_access_jwt "$SESSION_JSON")
 # on -- a handle change would orphan every post made under the old one.
 BLUESKY_DID=$(bsky_did "$SESSION_JSON")
 if [ -z "$BLUESKY_DID" ]; then
-    exit_error "Bluesky login didn’t return a DID."
+    exit_error "Bluesky login didn’t return a DID: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 fi
 
 # Build the record with jq rather than string interpolation. Seven of the 726
@@ -106,6 +106,6 @@ RECORD=$(jq -n \
     }')
 
 bsky_create_record "$BLUESKY_DID" "$ACCESS_JWT" "$RECORD" > /dev/null \
-    || exit_error "Posting message to Bluesky failed"
+    || exit_error "Posting message to Bluesky failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 
 log_info "posted to bluesky"

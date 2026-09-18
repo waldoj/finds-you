@@ -94,6 +94,18 @@ load_secrets() {
         fi
     fi
 
+    # Check the file parses before sourcing it.
+    #
+    # A hand-edited secrets file is easy to break -- a stray character after a
+    # closing quote starts a new string, and bash then runs to end of file
+    # looking for its match. Sourcing that reports only "Could not read",
+    # naming neither the problem nor a useful line. `bash -n` names both, and
+    # every bot sources this file, so one typo takes all of them down at once.
+    local parse_error
+    if ! parse_error=$(bash -n "$BOT_SECRETS_FILE" 2>&1); then
+        exit_error "Syntax error in $BOT_SECRETS_FILE: ${parse_error}"
+    fi
+
     # shellcheck disable=SC1090
     . "$BOT_SECRETS_FILE" || exit_error "Could not read $BOT_SECRETS_FILE"
 

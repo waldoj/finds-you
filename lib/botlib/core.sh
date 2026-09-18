@@ -85,6 +85,50 @@ add_redaction() {
     fi
 }
 
+# Set by http_request on failure, so a bot can put the platform's own reason
+# in its exit_error message instead of a static string. Both empty on success;
+# stale values from a previous call are cleared at the start of every request
+# so a bot can't mistake an old failure for the current one.
+BOTLIB_LAST_STATUS=""
+BOTLIB_LAST_BODY=""
+
+# Run a curl call without -f, capturing the HTTP status and body so a failure
+# carries the platform's own explanation rather than nothing.
+#
+# `-f` discards the response body on a 4xx/5xx, which is fine for a caller
+# that only needs to know pass/fail but useless for a human trying to find out
+# why -- "Posting to Mastodon failed" says nothing that "401" or "you are
+# blocked from this action" wouldn't. bsky_upload_video already did this by
+# hand; this pulls that pattern out so every transport function gets it rather
+# than whoever remembered to.
+#
+# Prints the body to stdout and returns 0 for any 2xx. Any other status, or a
+# curl-level failure (network error, timeout), returns 1 with nothing on
+# stdout and both variables set for the caller to inspect.
+http_request() {
+    BOTLIB_LAST_STATUS=""
+    BOTLIB_LAST_BODY=""
+
+    local response status
+    if ! response=$(curl -s -w '\n%{http_code}' "$@"); then
+        BOTLIB_LAST_STATUS="0"
+        BOTLIB_LAST_BODY=""
+        return 1
+    fi
+
+    status="${response##*$'\n'}"
+    response="${response%$'\n'*}"
+
+    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+        BOTLIB_LAST_STATUS="$status"
+        BOTLIB_LAST_BODY="$response"
+        return 1
+    fi
+
+    printf '%s' "$response"
+    return 0
+}
+
 # Append one line to the bot's log file. Failure to write is swallowed: a
 # read-only or missing log directory must not take down a bot that is otherwise
 # able to post.

@@ -8,6 +8,12 @@
 # having printed nothing. Callers use $(...) and check the status. JSON goes in
 # and out raw, so a caller needing an unusual field can jq it out without a
 # library change.
+#
+# On failure, core.sh's BOTLIB_LAST_STATUS and BOTLIB_LAST_BODY hold the HTTP
+# status and response body from the call that failed, so a bot can put the
+# platform's own explanation in its exit_error message:
+#
+#     masto_post_status "$TEXT" || exit_error "Posting to Mastodon failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 
 if [ -n "${BOTLIB_MASTODON_LOADED:-}" ]; then
     return 0
@@ -33,7 +39,7 @@ masto_upload_media() {
     local alt="$2"
 
     local response
-    response=$(curl -s -f -X POST \
+    response=$(http_request -X POST \
         -H "Authorization: Bearer ${MASTODON_TOKEN}" \
         -F "file=@${file}" \
         -F "description=${alt}" \
@@ -43,6 +49,8 @@ masto_upload_media() {
     media_id=$(printf '%s' "$response" | jq -r '.id // empty')
 
     if [ -z "$media_id" ]; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 
@@ -62,21 +70,29 @@ masto_await_media() {
     while [ "$attempt" -lt "$MASTO_POLL_ATTEMPTS" ]; do
         attempt=$(( attempt + 1 ))
 
-        status=$(curl -s -o /dev/null -w '%{http_code}' \
+        if ! status=$(curl -s -o /dev/null -w '%{http_code}' \
             -H "Authorization: Bearer ${MASTODON_TOKEN}" \
-            "${MASTODON_SERVER}/api/v1/media/${media_id}") || return 1
+            "${MASTODON_SERVER}/api/v1/media/${media_id}"); then
+            BOTLIB_LAST_STATUS="0"
+            BOTLIB_LAST_BODY=""
+            return 1
+        fi
 
         if [ "$status" = "200" ]; then
             return 0
         fi
 
         if [ "$status" != "206" ]; then
+            BOTLIB_LAST_STATUS="$status"
+            BOTLIB_LAST_BODY=""
             return 1
         fi
 
         sleep "$MASTO_POLL_DELAY"
     done
 
+    BOTLIB_LAST_STATUS="206"
+    BOTLIB_LAST_BODY="timed out waiting for media processing after ${MASTO_POLL_ATTEMPTS} attempts"
     return 1
 }
 
@@ -102,7 +118,7 @@ masto_post_status() {
     body_file=$(mktemp "${TMPDIR:-/tmp}/botlib.status.XXXXXX") || return 1
     printf '%s' "$text" > "$body_file"
 
-    local args=(-s -f -X POST
+    local args=(-X POST
         -H "Authorization: Bearer ${MASTODON_TOKEN}"
         -F "status=<${body_file}")
 
@@ -112,7 +128,7 @@ masto_post_status() {
     done
 
     local response status
-    response=$(curl "${args[@]}" "${MASTODON_SERVER}/api/v1/statuses")
+    response=$(http_request "${args[@]}" "${MASTODON_SERVER}/api/v1/statuses")
     status=$?
 
     rm -f "$body_file"
@@ -128,7 +144,7 @@ masto_reblog() {
     local status_id="$1"
 
     local response
-    response=$(curl -s -f -X POST \
+    response=$(http_request -X POST \
         -H "Authorization: Bearer ${MASTODON_TOKEN}" \
         "${MASTODON_SERVER}/api/v1/statuses/${status_id}/reblog") || return 1
 

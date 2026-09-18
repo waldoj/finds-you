@@ -9,6 +9,10 @@
 # take more parameters than it saves, and the `jq -n` calls are the
 # most-reviewed lines in each bot. This library handles transport; the bot
 # decides what to say.
+#
+# On failure, core.sh's BOTLIB_LAST_STATUS and BOTLIB_LAST_BODY hold the HTTP
+# status and response body from the call that failed, so a bot can put the
+# platform's own explanation in its exit_error message.
 
 if [ -n "${BOTLIB_BLUESKY_LOADED:-}" ]; then
     return 0
@@ -31,7 +35,7 @@ bsky_create_session() {
     local password="$2"
 
     local response
-    response=$(curl -s -f -X POST \
+    response=$(http_request -X POST \
         "${BLUESKY_SERVER}/xrpc/com.atproto.server.createSession" \
         -H "Content-Type: application/json" \
         -d "$(jq -n \
@@ -41,6 +45,8 @@ bsky_create_session() {
 
     # A session with no token is a failed login that returned 200
     if [ -z "$(printf '%s' "$response" | jq -r '.accessJwt // empty')" ]; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 
@@ -101,7 +107,7 @@ bsky_service_auth() {
     local lxm="$3"
 
     local response
-    response=$(curl -s -f -G \
+    response=$(http_request -G \
         -H "Authorization: Bearer ${access_jwt}" \
         --data-urlencode "aud=${aud}" \
         --data-urlencode "lxm=${lxm}" \
@@ -111,6 +117,8 @@ bsky_service_auth() {
     token=$(printf '%s' "$response" | jq -r '.token // empty')
 
     if [ -z "$token" ]; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 
@@ -131,7 +139,7 @@ bsky_upload_blob() {
     local file="$4"
 
     local response
-    response=$(curl -s -f -X POST \
+    response=$(http_request -X POST \
         "https://${pds_host}/xrpc/com.atproto.repo.uploadBlob" \
         -H "Authorization: Bearer ${jwt}" \
         -H "Content-Type: ${mime}" \
@@ -141,6 +149,8 @@ bsky_upload_blob() {
     blob=$(printf '%s' "$response" | jq -c '.blob // empty')
 
     if [ -z "$blob" ]; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 
@@ -150,10 +160,10 @@ bsky_upload_blob() {
 
 # Queue a video for transcoding, returning the job id.
 #
-# The response body is kept on failure rather than discarded with -f: this
-# endpoint explains auth problems in the body, and the caller needs to see it.
-# A successful upload reports the job at the top level, an already-running one
-# under jobStatus, so both shapes are accepted.
+# Goes through http_request rather than plain curl -f: this endpoint explains
+# auth problems in the body, and the caller needs to see it, not just know
+# that something went wrong. A successful upload reports the job at the top
+# level, an already-running one under jobStatus, so both shapes are accepted.
 bsky_upload_video() {
     local did="$1"
     local jwt="$2"
@@ -161,7 +171,7 @@ bsky_upload_video() {
     local file="$4"
 
     local response
-    response=$(curl -s -X POST \
+    response=$(http_request -X POST \
         "${BLUESKY_VIDEO_SERVER}/xrpc/app.bsky.video.uploadVideo?did=${did}&name=$(jq -rn --arg n "$name" '$n|@uri')" \
         -H "Authorization: Bearer ${jwt}" \
         -H "Content-Type: video/mp4" \
@@ -171,6 +181,8 @@ bsky_upload_video() {
     job_id=$(printf '%s' "$response" | jq -r '.jobId // .jobStatus.jobId // empty')
 
     if [ -z "$job_id" ]; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 
@@ -197,7 +209,7 @@ bsky_await_video() {
         # bash 3.2 -- which is what macOS ships -- treats the expansion of an
         # empty array as an unbound variable and aborts. Several bots run with
         # `set -euo pipefail`, so an empty jwt would kill the poll outright.
-        job_json=$(curl -s -f ${auth[@]+"${auth[@]}"} \
+        job_json=$(http_request ${auth[@]+"${auth[@]}"} \
             "${BLUESKY_VIDEO_SERVER}/xrpc/app.bsky.video.getJobStatus?jobId=${job_id}") || return 1
 
         state=$(printf '%s' "$job_json" | jq -r '.jobStatus.state // empty')
@@ -208,6 +220,8 @@ bsky_await_video() {
         fi
 
         if [ "$state" = "JOB_STATE_FAILED" ]; then
+            BOTLIB_LAST_STATUS="200"
+            BOTLIB_LAST_BODY="$job_json"
             return 1
         fi
 
@@ -236,7 +250,7 @@ bsky_create_record() {
         '{repo: $repo, collection: "app.bsky.feed.post", record: $record}') || return 1
 
     local response
-    response=$(curl -s -f -X POST \
+    response=$(http_request -X POST \
         "${BLUESKY_SERVER}/xrpc/com.atproto.repo.createRecord" \
         -H "Authorization: Bearer ${jwt}" \
         -H "Content-Type: application/json" \
@@ -245,6 +259,8 @@ bsky_create_record() {
     # A record that posted has a uri; anything else is a failure that returned
     # 200, which does happen
     if ! printf '%s' "$response" | jq -e '.uri' > /dev/null 2>&1; then
+        BOTLIB_LAST_STATUS="200"
+        BOTLIB_LAST_BODY="$response"
         return 1
     fi
 

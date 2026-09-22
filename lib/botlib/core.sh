@@ -92,6 +92,15 @@ add_redaction() {
 BOTLIB_LAST_STATUS=""
 BOTLIB_LAST_BODY=""
 
+# Statuses worth retrying: rate limiting and the server-side 5xx family. A 429
+# or a 5xx means the request was not accepted, so resending it cannot double
+# anything. Anything else -- 401, 404, 422 -- is retried for nothing since the
+# next attempt will fail the same way.
+HTTP_RETRY_STATUSES=" 429 500 502 503 504 "
+
+HTTP_RETRY_ATTEMPTS="${HTTP_RETRY_ATTEMPTS:-3}"
+HTTP_RETRY_DELAY="${HTTP_RETRY_DELAY:-2}"
+
 # Run a curl call without -f, capturing the HTTP status and body so a failure
 # carries the platform's own explanation rather than nothing.
 #
@@ -105,28 +114,49 @@ BOTLIB_LAST_BODY=""
 # Prints the body to stdout and returns 0 for any 2xx. Any other status, or a
 # curl-level failure (network error, timeout), returns 1 with nothing on
 # stdout and both variables set for the caller to inspect.
+#
+# A response in HTTP_RETRY_STATUSES is retried, up to HTTP_RETRY_ATTEMPTS
+# total tries with HTTP_RETRY_DELAY seconds between them. A curl-level failure
+# -- timeout, connection reset, no response at all -- is deliberately not
+# retried here: that is exactly the case where the server may already have
+# processed the request, and resending a status post or createRecord on a
+# guess would risk posting it twice. A 429/5xx is unambiguous -- the server is
+# saying it did not accept the request -- so only those are safe to retry
+# automatically.
 http_request() {
     BOTLIB_LAST_STATUS=""
     BOTLIB_LAST_BODY=""
 
-    local response status
-    if ! response=$(curl -s -w '\n%{http_code}' "$@"); then
-        BOTLIB_LAST_STATUS="0"
-        BOTLIB_LAST_BODY=""
-        return 1
-    fi
+    local attempt=1
+    while :; do
+        local response http_status
+        if ! response=$(curl -s -w '\n%{http_code}' "$@"); then
+            BOTLIB_LAST_STATUS="0"
+            BOTLIB_LAST_BODY=""
+            return 1
+        fi
 
-    status="${response##*$'\n'}"
-    response="${response%$'\n'*}"
+        http_status="${response##*$'\n'}"
+        response="${response%$'\n'*}"
 
-    if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
-        BOTLIB_LAST_STATUS="$status"
+        if [ "$http_status" -ge 200 ] && [ "$http_status" -lt 300 ]; then
+            printf '%s' "$response"
+            return 0
+        fi
+
+        BOTLIB_LAST_STATUS="$http_status"
         BOTLIB_LAST_BODY="$response"
-        return 1
-    fi
 
-    printf '%s' "$response"
-    return 0
+        case "$HTTP_RETRY_STATUSES" in
+            *" $http_status "*) : ;;
+            *) return 1 ;;
+        esac
+
+        [ "$attempt" -ge "$HTTP_RETRY_ATTEMPTS" ] && return 1
+
+        attempt=$(( attempt + 1 ))
+        sleep "$HTTP_RETRY_DELAY"
+    done
 }
 
 # Append one line to the bot's log file. Failure to write is swallowed: a

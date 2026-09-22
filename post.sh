@@ -70,42 +70,69 @@ fi
 
 POST="I hope this email ${ENTRY}"
 
+# Mastodon and Bluesky are attempted independently: a failure on one platform
+# is logged and the other is still attempted, rather than the whole run dying
+# on whichever platform happens to be first. Each block sets its own MASTODON_
+# and BLUESKY_ vars to record what happened, and the script exits non-zero at
+# the end if either platform failed -- one Slack alert either way, but it no
+# longer costs a healthy platform its post.
+MASTODON_OK="no"
+BLUESKY_OK="no"
+
 # Send the message to Mastodon
-masto_post_status "$POST" > /dev/null \
-    || exit_error "Posting message to Mastodon failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
-
-log_info "posted to mastodon"
-
-# Log this to the post history
-echo -n "$ENTRY" | md5sum | cut -d ' ' -f 1 >> post_history.txt
-
-# Create an authentication session on Bluesky
-SESSION_JSON=$(bsky_create_session "$BLUESKY_HANDLE" "$BLUESKY_APP_PASSWORD") \
-    || exit_error "Could not authenticate to Bluesky: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
-
-ACCESS_JWT=$(bsky_access_jwt "$SESSION_JSON")
-
-# The repo is the account's DID, not its handle. This bot used to send the
-# handle, which works against the live API but is not what a record is keyed
-# on -- a handle change would orphan every post made under the old one.
-BLUESKY_DID=$(bsky_did "$SESSION_JSON")
-if [ -z "$BLUESKY_DID" ]; then
-    exit_error "Bluesky login didn’t return a DID: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
+if masto_post_status "$POST" > /dev/null; then
+    log_info "posted to mastodon"
+    MASTODON_OK="yes"
+else
+    log_error "Posting message to Mastodon failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
 fi
 
-# Build the record with jq rather than string interpolation. Seven of the 726
-# entries in finds_you.txt contain a double quote, which produced malformed
-# JSON and a silently failed post roughly once in every hundred runs.
-RECORD=$(jq -n \
-    --arg text "$POST" \
-    --arg created_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-    '{
-        "$type": "app.bsky.feed.post",
-        text: $text,
-        createdAt: $created_at
-    }')
+# Create an authentication session on Bluesky
+if SESSION_JSON=$(bsky_create_session "$BLUESKY_HANDLE" "$BLUESKY_APP_PASSWORD"); then
+    ACCESS_JWT=$(bsky_access_jwt "$SESSION_JSON")
 
-bsky_create_record "$BLUESKY_DID" "$ACCESS_JWT" "$RECORD" > /dev/null \
-    || exit_error "Posting message to Bluesky failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
+    # The repo is the account's DID, not its handle. This bot used to send the
+    # handle, which works against the live API but is not what a record is
+    # keyed on -- a handle change would orphan every post made under the old
+    # one.
+    BLUESKY_DID=$(bsky_did "$SESSION_JSON")
+    if [ -z "$BLUESKY_DID" ]; then
+        log_error "Bluesky login didn’t return a DID: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
+    else
+        # Build the record with jq rather than string interpolation. Seven of
+        # the 726 entries in finds_you.txt contain a double quote, which
+        # produced malformed JSON and a silently failed post roughly once in
+        # every hundred runs.
+        RECORD=$(jq -n \
+            --arg text "$POST" \
+            --arg created_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+            '{
+                "$type": "app.bsky.feed.post",
+                text: $text,
+                createdAt: $created_at
+            }')
 
-log_info "posted to bluesky"
+        if bsky_create_record "$BLUESKY_DID" "$ACCESS_JWT" "$RECORD" > /dev/null; then
+            log_info "posted to bluesky"
+            BLUESKY_OK="yes"
+        else
+            log_error "Posting message to Bluesky failed: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
+        fi
+    fi
+else
+    log_error "Could not authenticate to Bluesky: HTTP ${BOTLIB_LAST_STATUS} ${BOTLIB_LAST_BODY}"
+fi
+
+# post_history.txt is what is_recent checks before an entry is even
+# selected, and it isn't platform-specific -- so it has to be written on any
+# success, not just Mastodon's. Gating it on Mastodon alone (the old
+# behavior, from when the two platforms were strictly sequential) would let a
+# Mastodon failure leave a Bluesky-posted entry undocumented, and the next
+# run could pick the same entry and post it to Bluesky again.
+if [ "$MASTODON_OK" = "yes" ] || [ "$BLUESKY_OK" = "yes" ]; then
+    echo -n "$ENTRY" | md5sum | cut -d ' ' -f 1 >> post_history.txt
+fi
+
+if [ "$MASTODON_OK" = "no" ] || [ "$BLUESKY_OK" = "no" ]; then
+    exit_error "Posting failed: mastodon=${MASTODON_OK} bluesky=${BLUESKY_OK}"
+fi
